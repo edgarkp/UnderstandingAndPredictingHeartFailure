@@ -1,0 +1,553 @@
+---
+title: "Understanding and predicting heart Failure"
+authors: Edgar KOUAJIEP - Ghassan Haddaji - Aymane El Yousfi
+date: '2022-08-17'
+output:
+  word_document: default
+---
+
+# 1. Abstract 
+The following project is a survival analysis study that aims to identify the factors that play in the mortality by heart failure. The results of our analysis will allow to describe people at high risk and low risk and predict the survival for high-risk people.
+The data used to perform the analysis originates from an experiment conducted by the Institute of Cardiology and Allied hospital Faisalabad-Pakistan during April-December (2015). Precisely, 299 patients were admitted in that institute and monitored. Many of their features (that were thought to be risk factors) were recorded at the beginning of the experiment. Some include ejection fraction, serum creatinine, serum sodium, anemia, platelets, creatinine phosphokinase, blood pressure or gender.
+The Kaplan Meier method was used to construct a survival’s general pattern and used to identify the most prominent features or group of features that could cause the patient’s death. We identified a “low risk” group that consists of patients with age less than 75 years, without hypertension, with a normal ejection fraction (52%-72% for men and 54%-74% for women), with a normal Serum Creatinine (0.74 to 1.35 mg/dL for adult men and 0.59 to 1.04 mg/dL for adult women) and with a normal serum sodium level (between 135 and 145 milliequivalents per liter). On the other hand, patients who didn’t meet any of those aforementioned criteria were considered at “high risk”. Levels of normality for each feature are explicitly defined latter.
+Afterwards, we used the Cox Regression Model and performed model selection to find the model with the most efficient prediction. We found that the gap between a model with the significant covariates and a model with the significant group of covariates (the group being defined thanks to the Kaplan Meier Method) was very narrow. Furthermore, the coefficients of the model with significant group of covariates were greater than those with the significant covariates. Since predicting survival for high-risk people is more important for us, the model with groups of covariates was a better choice and easier to interpret.
+
+
+# 2. Background & problem statement
+In general, a heart failure occurs when the heart muscle is unable to properly pump blood. As blood backs up, shortness of breath can occur as fluid can build up in the lungs [1]. So many curative treatments of heart failure exist to help people live longer. This includes changing one’s lifestyle (losing weight, working out, having a well-balanced diet, etc.). However, one of the drawbacks is that: As the event has already happened, the heart becomes weaker and is left with severe long-term effects. Thus, the odds for the patient to survive from another heart attack strongly reduces, sometimes requiring the patient to wear a ventricular assist device or conduct a heart transplant.
+But what if we can identify the risk factors of having heart failure and anticipate it or even more, predict the odd of a high-risk person to survive a heart failure after a certain amount of time? This is the problematic we are trying to answer in our study. In fact, the results and conclusions we will bring in this report could serve in strengthening the foundations of different heart failure preventive methods and controlling the conditions that can cause it.
+
+# 3. Study design and dataset description
+The dataset we used is a list of medical records from 299 patients who were admitted to the Institute of Cardiology and Allied hospital Faisalabad-Pakistan during April-December (2015) and had heart failure, collected during their follow-up period. The list describes for each patient 11 clinical features:
+
+**- age:** age of the patient (in years)
+
+**- anaemia:** decrease of red blood cells or hemoglobin (boolean)
+
+**- high blood pressure:** if the patient has hypertension (boolean)
+
+**- creatinine phosphokinase (CPK):** level of the CPK enzyme in the blood (micrograms/L).
+
+**- diabetes:** if the patient has diabetes (boolean)
+
+**- ejection fraction :** percentage of blood leaving the heart at each contraction (percentage). 
+
+**- platelets:** platelets in the blood (kiloplatelets/mL).
+
+**- sex:** woman or man (binary)
+
+**- serum creatinine:** level of serum creatinine in the blood (mg/dL).
+
+**- serum sodium:** level of serum sodium in the blood (mEq/L).
+
+**- smoking:** if the patient smokes or not (boolean)
+
+The dataset also includes: 
+
+**- time:** follow-up period (days)
+
+**- death event:** if the patient deceased during the follow-up period (boolean). Censor: Patient is alive
+
+It should be noted that Tanvir Ahmad, Assia Munir, Sajjad Haider Bhatti, Muhammad Aftab, and Muhammad Ali Raza (Government College University, Faisalabad, Pakistan) collected the original dataset version and made them available on FigShare under the Attribution 4.0 International [2]. We suppose that the experiment was conducted on an analytical basis. In other words, no intervention or experiment was done during the observation as the people monitoring the patients purely observed the outcomes.
+
+# 4. Data analysis
+
+## 4.1. Descriptive statistics
+```{r }
+suppressMessages(library(dplyr))
+suppressMessages(library(ggplot2))
+suppressMessages(library(corrplot))
+suppressMessages(library(RColorBrewer))
+suppressMessages(library(xlsx))
+``` 
+The data set had no missing values. So, no data replacement or data modification was necessary. 
+```{r }
+data <- read.csv('heart_failure_clinical_records_dataset.csv', header = TRUE, sep =',')
+head(data,5)
+```
+```{r }
+colNames <- colnames(data)
+for (i in 1:length(colNames)) {
+  colName = colNames[i]
+  numberofNan = sum(is.nan(data$colName))
+  out <- paste0('Number of Nan values for ', colName ,' column: ', numberofNan)
+  print(out)
+}
+```
+If we check for the distribution of events “censored” and “death”, we have 67.9% for “censored” events versus 32.1% for “death” events. Timewise, we obtained the following distribution:  
+
+> overall distribution
+
+``` {r }
+data %>% 
+    mutate(event_type = factor(ifelse(DEATH_EVENT == 1, "death", "censored"))) %>% 
+    group_by(event_type) %>% 
+    count(name = "count") %>%
+    mutate(count_percent = 100 * (count /nrow(data)))
+```
+> distribution on time
+
+``` {r }
+data %>%
+    mutate(event_type = factor(ifelse(DEATH_EVENT == 1, "death", "censored"))) %>%
+    select(event_type, time) %>%
+    ggplot(aes(x = time, colour = event_type)) + 
+    geom_density() + 
+    ggtitle("Censored vs Deaths")
+```
+Distribution of time-to-even is different between patients who died during the study and people who were still alive and drop out from the study. Most of the data are censored and happened mostly 100 days after the experiment start. Cases of death relatively decrease exponentially with time and often happened during the 1st 100 days.
+
+If we look at the distributions of each feature, We note that the different features don't have a good distribution (like CPK, Platelets, Serum sodium, sex and Smoking status), which might confound our results. However, it has no impact for the Kaplan Meier model since it doesn't require an assumption on data distribution but it could have an impact on the Cox Regression :
+```{r}
+# Continuous variables: Age, Creatinine_phosphokinase, ejection_fraction, Platelets, Serum creatinine and Serum sodium  
+# NB: To avoid having many figures for the visualization of the distribution for the continuous variables, we normalized the Data with Standard Scaling
+
+scaled_data_continuous <-  as.data.frame(scale(data[,c(1,3,5,7,8,9)]))
+boxplot(scaled_data_continuous)
+
+# Discrete/boolean variables: Anaemia, Diabetes, Hypertension, Sex and Smoking
+data_discret <-  as.data.frame(data[,c(2,4,6,10,11)])
+mat = matrix(ncol = 5, nrow = 2)
+synthesis <- data.frame(mat)
+colnames(synthesis) <- paste(names(data_discret),' %')
+rownames(synthesis) <- c('0 (without/female sex)','0 (With/male sex')
+Total <- colSums(data_discret==0) + colSums(data_discret==1)
+synthesis[1,] <- (colSums(data_discret==0)/Total)*100
+synthesis[2,] <- (colSums(data_discret==1)/Total)*100
+
+synthesis
+```
+
+## 4.2. Statistical inference
+### 4.2.1. Kaplan Meier
+
+```{r}
+library(survival)
+library(tidyverse)
+```
+
+The goal of this section is to select the most important variables and define the high and low risk groups. To do so, we will define groups for each variable and ensure that the difference between each group is significant in terms of death event. Otherwise, it means that the variable doesn’t have an important impact on the death event. For most of the features, the difference between groups is based on normality levels we found in the medical literature:
+
+#### 4.2.1.1. Age groups
+The groups are defined as follows [3] :
+- Young adult : Less than 55Yo 
+- Middle aged: Between 55Yo and 65Yo  
+- Old: Between 65Yo and 75Yo  
+- Elderly: Greater than 75Yo
+
+We can conclude that there's at least one significant difference between the 4 groups (p-value = 2e-6 < 5%). Based on the KM results, We can see a big difference between the elderly group and the others.  
+```{r}
+data$age_group <- ifelse(data$age<55,"Young adult",
+                         ifelse(data$age<65,"Middle aged",
+                                ifelse(data$age<75,"Old","elderly")
+                               )
+                        )
+
+fit.KM.age_group<- survfit(Surv(time, DEATH_EVENT) ~ age_group, data = data)
+summary(fit.KM.age_group)
+plot(fit.KM.age_group,col = 1:4, mark.time = TRUE,
+     main = "Kaplan-Meier estimator for age group",
+     ylab = "Survival probability",
+     xlab = "time (days)")
+legend("bottomleft", col = 1:4, lty = 1, legend = c("elderly >=75Yo", "Middle aged [55Yo,65Yo[", "Old [65Yo,75Yo[","Young Adult <55Yo"))
+survdiff(Surv(time, DEATH_EVENT) ~ age_group, data = data)
+```
+
+To ensure that there is no big difference between the 3 other groups (middle aged, old and young), we will redo a logrank test on a new dataset where the rows of people over 75 years old have been removed. 
+We can conclude that there's no significant difference between these 3 groups, the p-value equal to 0.3 (so greater than 5%). They have almost the same probability to survive. 
+```{r}
+new_data <- subset(data, data$age<75)
+new_fit.KM.age_group<- survfit(Surv(time, DEATH_EVENT) ~ age_group, data = new_data)
+summary(new_fit.KM.age_group)
+plot(new_fit.KM.age_group,col = 1:3, mark.time = TRUE,
+     main = "Kaplan-Meier estimator for age group",
+     ylab = "Survival probability",
+     xlab = "time (days)")
+legend("bottomleft", col = 1:4, lty = 1, legend = c("Middle aged [55Yo,65Yo[", "Old [65Yo,75Yo[","Young Adult <55Yo"))
+survdiff(Surv(time, DEATH_EVENT) ~ age_group, data = new_data)
+
+```
+
+Because the p-value is less than 5% (because being equal to 2e-6), we will keep only 2 groups :
+- Elderly (Age greater than 75Yo)
+- Not Elderly (Age less than 75Yo)
+People with an age over 75Yo have less probability to survive.
+```{r}
+data$age_group <- ifelse(data$age<75,"<75Yo",">=75Yo")
+fit.KM.age_group<- survfit(Surv(time, DEATH_EVENT) ~ age_group, data = data)
+summary(fit.KM.age_group)
+plot(fit.KM.age_group,col = 1:2, mark.time = TRUE,
+     main = "Kaplan-Meier estimator for age group",
+     ylab = "Survival probability",
+     xlab = "time (days)")
+legend("bottomleft", col = 1:2, lty = 1, legend = c("Age<75Yo", "Age>=75Yo"))
+survdiff(Surv(time, DEATH_EVENT) ~ age_group, data = data)
+```
+
+#### 4.2.1.2. Anaemia groups 
+Here, we have two groups: without anemia (=0) and with anemia (=1).
+We can conclude that the difference between people with and without anemia is not significant (p value = 0.1 > 5%). They have almost the same probability to survive.
+```{r}
+fit.KM.anaemia_group<- survfit(Surv(time, DEATH_EVENT) ~ anaemia, data = data)
+summary(fit.KM.anaemia_group)
+plot(fit.KM.anaemia_group,col = 1:2, mark.time = TRUE,
+     main = "Kaplan-Meier estimator for anaemia group",
+     ylab = "Survival probability",
+     xlab = "time (days)")
+legend("bottomright", col = 1:2, lty = 1, legend = c("without anaemia", "with anaemia"))
+survdiff(Surv(time, DEATH_EVENT) ~ anaemia, data = data)
+```
+
+#### 4.2.1.3. CPK groups 
+Here, we will define two groups [4] :
+- with normal level of CPK: between 10 to 120 mcg/L
+- with abnormal level of CPK: Less than 10 mcg/L or greater than 120 mcg/L
+
+We can conclude that the difference between people with a normal and abnormal CPK is not significant (p-value = 0.3 > 5%). They have almost the same probability to survive.
+```{r}
+data$CPK_group <- ifelse( data$creatinine_phosphokinase<=120 & data$creatinine_phosphokinase>=10 , "Normal CPK", "Abnormal CPK") 
+fit.KM.CPK_group<- survfit(Surv(time, DEATH_EVENT) ~ CPK_group, data = data)
+summary(fit.KM.CPK_group)
+plot(fit.KM.CPK_group,col = 1:2, mark.time = TRUE,
+     main = "Kaplan-Meier estimator for creatinine phosphokinase (CPK) group",
+     ylab = "Survival probability",
+     xlab = "time (days)")
+legend("bottomright", col = 1:2, lty = 1, legend = c("Abnormal CPK", "Normal CPK"))
+survdiff(Surv(time, DEATH_EVENT) ~ CPK_group, data = data)
+```
+
+#### 4.2.1.4. Diabetes groups 
+Here, we have two groups: without diabetes (=0) and with diabetes (=1).
+We can conclude that there's no significant difference between people with and without diabetes (p-value = 0.8 > 5%). They have the same probability to survive.
+```{r}
+fit.KM.diabetes_group<- survfit(Surv(time, DEATH_EVENT) ~ diabetes, data = data)
+summary(fit.KM.diabetes_group)
+plot(fit.KM.diabetes_group,col = 1:2, mark.time = TRUE,
+     main = "Kaplan-Meier estimator for diabetes group",
+     ylab = "Survival probability",
+     xlab = "time (days)")
+legend("bottomright", col = 1:2, lty = 1, legend = c("without diabetes", "with diabetes"))
+survdiff(Surv(time, DEATH_EVENT) ~ diabetes, data = data)
+```
+
+#### 4.2.1.5. Ejection fraction groups
+Here, we define 5 groups [5] :
+- Highly abnormal: Respectively greater than 72% for men and 74% for women
+- Normal: Between 52%-72% for men and 54%-74% for women. 
+- Mildly abnormal: Between 41%-51% for men and 41%-53% for women. 
+- Moderately abnormal: Between 30%-40% for men and women. 
+- Severely abnormal: less than 30% for men and women.
+We can conclude that there's at least one significant difference between the 5 groups (p-value = 3e-7 < 5%). We can also see an important difference between the severely abnormal ejection group and the others.
+Note that there's not enough data for the highly abnormal ejection group.
+We can double check that with the boxplot below, we have 2 outliers. For the rest of the study, we will focus only on the 4 other groups.
+```{r}
+data$ejection_fraction_group <- ifelse((data$ejection_fraction>=72 & data$sex==1)|(data$ejection_fraction>=74 & data$sex==0), "Highly abnormal ejection", ifelse((data$ejection_fraction<72 & data$ejection_fraction>=52 & data$sex==1)|(data$ejection_fraction<74 & data$ejection_fraction>=54 & data$sex==0), "Normal ejection", ifelse((data$ejection_fraction<52 & data$ejection_fraction>=41 & data$sex==1)|(data$ejection_fraction<54 &   data$ejection_fraction>=41 & data$sex==0), "Mildly abnormal ejection", ifelse(data$ejection_fraction<41 & data$ejection_fraction>=30, "Moderately abnormal ejection", "Severely abnormal ejection"))))
+                                                    
+fit.KM.ejection_fraction_group<- survfit(Surv(time, DEATH_EVENT) ~ ejection_fraction_group, data = data)
+summary(fit.KM.ejection_fraction_group)
+plot(fit.KM.ejection_fraction_group,col = 1:5, mark.time = TRUE,
+     main = "Kaplan-Meier estimator for ejection fraction group",
+     ylab = "Survival probability",
+     xlab = "time (days)")
+legend("bottomleft", col = 1:5, lty = 1, legend = c("Highly abnormal ejection", "Mildly abnormal ejection","Moderately abnormal ejection","Normal ejection","severely abnormal ejection"))
+survdiff(Surv(time, DEATH_EVENT) ~ ejection_fraction_group, data = data)
+boxplot(data$ejection_fraction)
+```
+
+To ensure that there is no significant difference between the 3 other groups (Normal ejection, mildly abnormal, Moderately abnormal), we repeat the same reasoning that we did with the age variable.
+We can conclude that there's no significant difference between these 3 groups (p-value = 0.8 > 5%). They have almost the same probability to survive. So, we will merge them for the rest of the study. 
+```{r}
+new_data_2 <- subset(data, data$ejection_fraction_group =="Normal ejection" | data$ejection_fraction_group == "Mildly abnormal ejection" | data$ejection_fraction_group == "Moderately abnormal ejection")
+fit.KM.ejection_fraction_group_2<- survfit(Surv(time, DEATH_EVENT) ~ ejection_fraction_group, data = new_data_2)
+summary(fit.KM.ejection_fraction_group_2)
+plot(fit.KM.ejection_fraction_group_2,col = 1:3, mark.time = TRUE,
+     main = "Kaplan-Meier estimator for ejection fraction group",
+     ylab = "Survival probability",
+     xlab = "time (days)")
+legend("bottomleft", col = 1:3, lty = 1, legend = c( "Mildly abnormal ejection","Moderately abnormal ejection","Normal ejection"))
+survdiff(Surv(time, DEATH_EVENT) ~ ejection_fraction_group, data = new_data_2)
+
+```
+
+We will keep only 2 groups : Almost normal ejection group and the severely abnormal ejection group because their p-value is equal to 4e-9 which is less than 5%. People with severely abnormal ejection fraction has less probability to survive.
+```{r}
+data$ejection_fraction_group <- ifelse(data$ejection_fraction<30 | (data$ejection_fraction>=72 & data$sex==1) |(data$ejection_fraction>=74 & data$sex ==0), "Severely abnormal ejection","Almost normal ejection")
+                                                    
+fit.KM.ejection_fraction_group<- survfit(Surv(time, DEATH_EVENT) ~ ejection_fraction_group, data = data)
+summary(fit.KM.ejection_fraction_group)
+plot(fit.KM.ejection_fraction_group,col = 1:2, mark.time = TRUE,
+     main = "Kaplan-Meier estimator for ejection fraction group",
+     ylab = "Survival probability",
+     xlab = "time (days)")
+legend("bottomleft", col = 1:2, lty = 1, legend = c("Almost normal ejection","severely abnormal ejection"))
+survdiff(Surv(time, DEATH_EVENT) ~ ejection_fraction_group, data = data)
+```
+
+#### 4.2.1.6. Blood pressure groups
+Here, we have two groups: without hypertension (=0) and with hypertension (=1).
+We can conclude that there's a significant difference between people with a normal and abnormal blood pressure (p-value = 0.04 < 5%). People with hypertension has less probability to survive.
+```{r}
+fit.KM.high_blood_pressure_group<- survfit(Surv(time, DEATH_EVENT) ~ high_blood_pressure, data = data)
+summary(fit.KM.high_blood_pressure_group)
+plot(fit.KM.high_blood_pressure_group,col = 1:2, mark.time = TRUE,
+     main = "Kaplan-Meier estimator for blood pressure group",
+     ylab = "Survival probability",
+     xlab = "time (days)")
+legend("bottomright", col = 1:2, lty = 1, legend = c("Normal blood pressure", "High blood pressure"))
+survdiff(Surv(time, DEATH_EVENT) ~ high_blood_pressure, data = data)
+```
+
+#### 4.2.1.7. Platelets groups
+We will define2 groups [5] :
+- Normal level of platelets: Between 150,000 to 450,000 platelets per microliter of blood
+- AbNormal level of platelets: Less than 150,000 or greater than 450,000 platelets per microliter of blood
+We can conclude that there's no significant difference between people with normal and abnormal platelets (p-value = 0.4 > 5%). They have almost the same probability to survive.
+```{r}
+data$platelets_group <- ifelse(data$platelets<=450000 & data$platelets>=150000, "Normal Platelets", "Abnormal Platelets") 
+fit.KM.platelets_group<- survfit(Surv(time, DEATH_EVENT) ~ platelets_group, data = data)
+summary(fit.KM.platelets_group)
+plot(fit.KM.platelets_group,col = 1:2, mark.time = TRUE,
+     main = "Kaplan-Meier estimator for platelets group",
+     ylab = "Survival probability",
+     xlab = "time (days)")
+legend("bottomright", col = 1:2, lty = 1, legend = c("Abnormal Platelets", "Normal Platelets"))
+survdiff(Surv(time, DEATH_EVENT) ~ platelets_group, data = data)
+```
+
+#### 4.2.1.8. Serum creatinine groups
+We will define two groups [7]:
+- Normal level of serum creatinine: Between 0.74 and 1.35 micromoles/L for men and 0.59 and 1.04 micromoles/L for women
+- Abnormal level of serum creatinine: if the serum creatinine is not in the range mentionned above (for both men and women)
+
+We can conclude that there is a significant difference between people with an almost normal and abnormal Serum creatinine level (p-value = 5e-4 < 5%). The abnormal group has less probability to survive.
+```{r}
+data$serum_creatinine_group <- ifelse((data$serum_creatinine<=1.35 & data$serum_creatinine>=0.74 & data$sex==1)|(data$serum_creatinine<=1.04 & data$serum_creatinine>=0.59 & data$sex==0), "Normal Serum Creatinine level", "Abnormal Serum Creatinine level") 
+fit.KM.platelets_group<- survfit(Surv(time, DEATH_EVENT) ~ serum_creatinine_group, data = data)
+summary(fit.KM.platelets_group)
+plot(fit.KM.platelets_group,col = 1:2, mark.time = TRUE,
+     main = "Kaplan-Meier estimator for serum creatinine group",
+     ylab = "Survival probability",
+     xlab = "time (days)")
+legend("bottomright", col = 1:2, lty = 1, legend = c("Abnormal serum creatinine level", "Normal serum creatinine level"))
+survdiff(Surv(time, DEATH_EVENT) ~ serum_creatinine_group, data = data)
+```
+
+#### 4.2.1.9. Serum sodium groups
+2 groups are defined here [8]:
+- Normal level of serum sodium: between 135 and 145 milliequivalents per liter (mEq/L)
+- Abnormal level of serum sodium: Greater than 145 or less than 135 mEg/L
+
+We can conclude that there's a significant difference between the people with normal and abnormal Serum Sodium level, p value = 6e-5 < 5%. The abnormal group has less probability to survive.
+```{r}
+data$serum_sodium_group <- ifelse(data$serum_sodium<=145 & data$serum_sodium>=135, "Normal Sodium level", "Abnormal sodium level") 
+fit.KM.sodium_group<- survfit(Surv(time, DEATH_EVENT) ~ serum_sodium_group, data = data)
+summary(fit.KM.sodium_group)
+plot(fit.KM.sodium_group,col = 1:2, mark.time = TRUE,
+     main = "Kaplan-Meier estimator for serum sodium group",
+     ylab = "Survival probability",
+     xlab = "time (days)")
+legend("bottomright", col = 1:2, lty = 1, legend = c("Abnormal Sodium level", "Normal Sodium level"))
+survdiff(Surv(time, DEATH_EVENT) ~ serum_sodium_group, data = data)
+
+```
+
+#### 4.2.1.10. Sex groups
+We can conclude that there's no significant difference between men and women, they have almost the same probability to survive, p value = 0.9 > 5%.
+```{r}
+fit.KM.sex_group<- survfit(Surv(time, DEATH_EVENT) ~ sex, data = data)
+summary(fit.KM.sex_group)
+plot(fit.KM.sex_group,col = 1:2, mark.time = TRUE,
+     main = "Kaplan-Meier estimator for sex group",
+     ylab = "Survival probability",
+     xlab = "time (days)")
+legend("bottomright", col = 1:2, lty = 1, legend = c("WOMEN", "MEN"))
+survdiff(Surv(time, DEATH_EVENT) ~ sex, data = data)
+```
+
+#### 4.2.1.11. Smoking groups
+We can conclude that there's no significant difference between the smokers and non-smokers they have almost the same probability to survive (p-value = 1 > 5%)
+```{r}
+fit.KM.smoking_group<- survfit(Surv(time, DEATH_EVENT) ~ smoking, data = data)
+summary(fit.KM.smoking_group)
+plot(fit.KM.smoking_group,col = 1:2, mark.time = TRUE,
+     main = "Kaplan-Meier estimator for smoking group",
+     ylab = "Survival probability",
+     xlab = "time (days)")
+legend("bottomright", col = 1:2, lty = 1, legend = c("Nonsmokers", "Smokers"))
+survdiff(Surv(time, DEATH_EVENT) ~ smoking, data = data)
+```
+
+#### 4.2.1.12. Conclusion
+As explained at the beginning of this section, the goal of this part is to define the high/low risk groups based on the KM result of each variable. Firstly, we defined the group of each variable. Then, we checked the impact of each group on the death event (probability to survive/die) and finally we used the logrank test to ensure that the difference between the groups is significant or not.
+
+Here's the result :
+ *1. For Age groups (<75Yo and >=75Yo), High Blood Pressure groups (with hypertension and without), Ejection fraction groups (almost normal and severely abnormal), Serum Creatinine groups (normal and abnormal) and Serum Sodium groups (normal and abnormal)*,  there's a significant difference between the 2 groups of each variable. People with an age over 75Yo, with hypertension, with an abnormal ejection fraction or with an abnormal serum sodium level has less probability to survive;
+  
+  *2. For Anaemia groups (with and without), Creatinine Phosphokinase groups (normal CPK and abnormal CPK), Diabetes groups (with and without), Platelets groups (normal and abnormal), Sex groups (male and female) and Smoking groups (smokers and nonsmokers)*, there's no significant difference between the 2 groups of each variable, they have almost the same probability to survive.
+  
+After defining the factors that have an important impact on the survival probability, we can conclude that low risk group consists of the people with an age under 75Yo, without hypertension, with a normal ejection fraction, a normal serum sodium level and a normal serum creatinine level.
+
+As a final step, we created a new discrete variable called 'risk_group' that has 2 possible values: 'Low risk' if the conditions above are fulfilled and 'High risk' if they are not. We applied the KM method and the logrank test on this new variable and we found a p-value equal to 1e-05. Therefore, the difference between the 2 groups is significant. On one hand the low risk group has a survival probability above 0.9 during the whole follow-up period which is quite consistent with the purpose of this study.
+```{r}
+data$risk_group <- ifelse(data$age_group =="<75Yo" & data$high_blood_pressure==0 & data$ejection_fraction_group=="Almost normal ejection" & data$serum_sodium_group=="Normal Sodium level" & data$serum_creatinine_group=="Normal Serum Creatinine level", "Low risk", "High risk" ) 
+fit.KM.risk_group<- survfit(Surv(time, DEATH_EVENT) ~ risk_group, data = data)
+summary(fit.KM.risk_group)
+plot(fit.KM.risk_group,col = 1:2, mark.time = TRUE,
+     main = "Kaplan-Meier estimator for high and low risk groups",
+     ylab = "Survival probability",
+     xlab = "time (days)")
+legend("bottomright", col = 1:2, lty = 1, legend = c("High risk", "Low risk"))
+survdiff(Surv(time, DEATH_EVENT) ~ risk_group, data = data)
+```
+
+### 4.2.2. Cox Regression
+The idea in this part is to evaluate different models and compare them in order to find the one that will be the most effective for making  prediction.
+#### 4.2.2.1. Model selection for single covariates
+We start with the  full CoX Model (with all the Variables) to see which covariates are necessary to the model. The metrics used to do will be the coefficient and the p-value related to each covariate.  
+```{r}
+Model_Full<- coxph(Surv(time, DEATH_EVENT) ~ (data$age)  +data$anaemia+ data$creatinine_phosphokinas+data$diabetes+ data$ejection_fraction+ +data$high_blood_pressure+data$platelets+data$serum_creatinine+data$serum_sodium+ data$sex+data$smoking , data = data)
+
+summary(Model_Full)
+
+```
+
+Now we use a stepwise approach to navigate all the spaces of the Full Model and select the one  with the lower AIC 
+```{r}
+Model_Full_Reduced <- step(Model_Full)
+summary(Model_Full_Reduced)
+AIC(Model_Full,Model_Full_Reduced) 
+```
+
+The result of the stepwise method shows that four covariates do not impact the model (platelets, smoking, diabetes, and sex) because their p-value is far greater than 5%. Also, the obtained model or reduced model is based on age, anaemia, CPK, ejection fraction, high blood pressure, serum creatinine and serum sodium. However, the coefficients of this model are difficult to interpret: the coefficient of ejection fraction for instance is negative and thus not going into the right direction but its p-value is very significant. Moreover, other variables (ejection fraction, serum creatinine, serum sodium, CPK) have ranges of values in which they can be considered in normal or abnormal levels. Therefore, navigating the value for each variable can increase or decrease the risk. In fact, it makes the reduced model more generalized and not specific for each risk group we defined in section 4.2.1. 
+
+```{r}
+AIC(Model_Full,Model_Full_Reduced)
+```
+
+The selection of the model and select the one with the lower AIC. Finally, the reduced model gives a better AIC (951.83 vs 956.46 for the full model) and therefore it is the best model.
+
+#### 4.2.2.2. Model selection with groups of covariates
+In this section, we will use the groups already defined by the method of K.M. (Cf section 4.2.1). We will use again the stepwise method to reduce the model in order to keep only the significant groups of covariates.
+  
+
+```{r}
+Model_GRP <- coxph(Surv(time, DEATH_EVENT) ~ data$age_group + data$anaemia+ data$CPK_group+data$diabetes+ data$ejection_fraction_group+ +data$high_blood_pressure+data$platelets+data$CPK_group+data$serum_sodium_group+ data$sex+data$smoking  , data = data)
+summary(Model_GRP)
+```
+The results of the stepwise method reveals that the normal CPK group and the anaemia covariate are insignificant (p-Value >>5%)
+
+```{r}
+Model_GRP_red <- step(Model_GRP)
+summary(Model_GRP_red)
+```
+Regarding the reduced model, we will check if the variables normal CPK group and anemia are significant variables by using the Likelihood-ratio test (ANOVA) as follows:
+*-	Step 1: * We perform an ANOVA test between the reduced model and the reduced model without the normal CPK group. 
+*-	Step 2: * We perform an ANOVA test between the reduced model without the normal CPK group and the reduced model without the normal CPK group & anaemia. 
+```{r}
+
+Model_Wo_CPK <- coxph(Surv(time, DEATH_EVENT) ~ data$age_group + data$anaemia  +data$ejection_fraction_group+ +data$high_blood_pressur+data$serum_sodium_group  , data = data)
+summary(Model_Wo_CPK )
+anova(Model_GRP_red,Model_Wo_CPK)
+```
+Performing our step 1 shows us that the normal CPK group (p-Value 0.1376 >> 5%) is not significant. 
+
+```{r}
+Model_GRP_red <- Model_Wo_CPK
+Model_Wo_anaemia <- coxph(Surv(time, DEATH_EVENT) ~ data$age_group  +data$ejection_fraction_group+ +data$high_blood_pressur+data$serum_sodium_group  , data = data)
+anova(Model_GRP_red,Model_Wo_anaemia )
+```
+Performing our step 2 shows us that anaemia is not significant (p-Value 0.1279 >> 5%) 
+
+So our new reduced model will not depend on anaemia and normal CPK group.
+```{r}
+Model_GRP_red <- Model_Wo_anaemia
+summary(Model_GRP_red)
+```
+Now comparing the respective AIC of the full model and the final reduced model shows us that this latter is the best one (951.83 vs 959.46 for the full model).
+```{r}
+AIC(Model_Full_Reduced,Model_GRP_red)
+```
+
+#### 4.2.2.3. Models benchmark and C-statistics calculation
+From sections 4.2.2.1 and 4.2.2.2, we obtain 2 models :
+*-	Model A* which is a reduced model that depends on single covariates: *age, anaemia, CPK, ejection fraction, high blood pressure, serum creatinine and serum sodium*
+*-	Model B* which is a reduced model that depends on group of covariates: *elderly age group, severely abnormal ejection fraction group, high blood pressure and normal serum sodium group*
+
+
+A good benchmark requires to split our dataset randomly into two subsets: a training set and a validation set. The training set will be used to train both models and the validation set will be used to assess their performances.
+  
+```{r}
+set.seed(1000)
+i.training <- sample.int(nrow(data), size = ceiling(nrow(data)/2), replace = FALSE)
+i.testing <- setdiff(seq_len(nrow(data)), i.training)
+d_training <- data[i.training, ]
+d_testing <- data[i.testing, ]
+```
+
+
+> Train the two models 
+
+```{r}
+MF <- coxph(Surv(time, DEATH_EVENT) ~ age + anaemia+ creatinine_phosphokinase+ ejection_fraction+ high_blood_pressure + serum_creatinine+serum_sodium  , data =d_training)
+
+MG <- coxph(Surv(time, DEATH_EVENT) ~ age_group  +ejection_fraction_group+high_blood_pressure+serum_sodium_group  , data = d_training)                 
+```
+
+> Predict the value of LP for each event in d_testing
+
+```{r}
+d_testing$lp_MF <- predict(MF, newdata = d_testing, type = "lp")
+d_testing$lp_MG <- predict(MG, newdata = d_testing, type = "lp")
+```
+
+> Performance assessment
+
+```{r}
+models <- list(
+    MF = coxph(Surv(time, DEATH_EVENT) ~ lp_MF, data = d_testing),
+    MG = coxph(Surv(time, DEATH_EVENT) ~ lp_MG, data = d_testing)
+  )
+
+summary(models$MF)
+summary(models$MG) 
+
+map_dfc(models, ~ summary(.)$concordance[1])
+
+```
+
+
+#### 4.2.2.4. Conclusion 
+The result of our benchmark gives the following : 
+                        exp(coef) exp(-coef) lower .95 upper .95
+Model A                     2.055     0.4866     1.565     2.699
+Concordance = 0.674  (se = 0.042)
+
+                        exp(coef) exp(-coef) lower .95 upper .95
+Model B                     2.153     0.4645     1.572     2.949
+Concordance = 0.669  (se = 0.042)
+
+We can conclude that both models have close concordances. Also, model B (model with the group of covariates) has a greater coefficient than model A. Since one of the important needs is to predict survival of people at high risk, we decide to choose model B because it responds more to our request and is easier to interpret.
+
+# 5. References
+
+[1]https://www.mayoclinic.org/diseases-conditions/heart-failure/symptoms-causes/syc-20373142
+
+[2]https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0181001
+
+[3]https://www.bmj.com/content/372/bmj.n461 
+
+[4]https://www.healthline.com/health/ejection-fraction#ejection-fraction-results
+
+[5]https://www.mayoclinic.org/tests-procedures/creatinine-test/about/pac-20384646
+
+[6]https://www.ucsfhealth.org/medical-tests/sodium-blood-test
+
+[7]https://eide.fr/ptc/Normes%20biologiques.pdf
+
+[8]https://www.esculape.com/fmc/icfevg.html
+
+[9]https://archive.ics.uci.edu/ml/datasets/Heart+failure+clinical+records
+
+[10]https://www.heart.org/en/health-topics/heart-failure/diagnosing-heart-failure/ejection-fraction-heart-failure-measurement
+
+[11]https://s4be.cochrane.org/blog/2021/04/06/an-introduction-to-different-types-of-study-design/
